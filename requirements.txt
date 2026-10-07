@@ -1,0 +1,5 @@
+rapidocr-onnxruntime
+websocket-client
+opencv-python
+numpy
+mss

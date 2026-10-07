@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.bak
+*.log
+*.err.log
+*.hb
+*.lock
+backups/
+config.json
+killfeed_dock.html
