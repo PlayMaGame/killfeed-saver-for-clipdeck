@@ -1,6 +1,10 @@
 # Killfeed Saver
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Real-time killfeed OCR saver for Wardogs, using OBS Studio + [Replay Buffer Pro](https://github.com/JoshuaPotter/replay-buffer-pro) for exact-length replay clips.
+
+See [CHANGELOG.md](CHANGELOG.md) for the release history.
 
 ## How it works
 
@@ -10,13 +14,15 @@ Real-time killfeed OCR saver for Wardogs, using OBS Studio + [Replay Buffer Pro]
    screenshots. Set the region with **Crop X / Y / W / H** in the OBS script
    Properties (or `crop` in config.json); the green box shows it.
 3. When it sees your gamertag a **fight** opens and ONE final clip is saved for
-   it — anchored 10s before the first kill, growing as the fight does:
-   - **Kill**: each kill adds 15s (`kill_step`). 1 kill = 15s clip, 2 = 30s, ...
+   it — anchored before the first event, growing as the fight does:
+   - **Kill**: a lone kill gets a 5s outro (`outro`); each *extra* kill **resets**
+     the tail to `kill_step` (15s) counted from that kill (not additive), so a
+     later kill is never cut.
    - **Self-death**: treated like a kill anchor (10s prelude + 5s outro).
    - **Death**: adds 5s (`death_extra`) of complaining room if it follows a kill.
-   - **Lone death** (no kill): a short 10s clip (5s prelude + 5s outro).
-   - **Mic active** during a window: +5s (`mic_extra`), once per event, unless it
-     was a lone death.
+   - **Lone death** (no kill): a short clip (3s prelude + 5s outro).
+   - **Mic active**: the tail follows your voice — the clip closes `mic_tail`
+     (2.5s) after the last speech, and the intro gets `mic_intro_extra` (3s).
 4. **Rewrite**: if a follow-up kill/death lands after a clip was already saved,
    the script saves a longer clip and deletes the shorter one — a fight always
    ends with a single clip at its final length.
@@ -28,14 +34,13 @@ Real-time killfeed OCR saver for Wardogs, using OBS Studio + [Replay Buffer Pro]
 
 | Situation | Final clip |
 |-----------|------------|
-| 1 kill, nothing else | 15s (10 prelude + 5 outro) |
-| 1 kill + mic during outro | 20s |
-| 1 kill + 1 death | +5s complaining |
-| 2 kills | 30s |
-| 3 kills | 45s |
-| N kills | 15 × N s |
-| Self-death | 15s (+5s if mic active) |
-| Lone death | 10s (5 prelude + 5 outro) |
+| 1 kill, no mic | 5s prelude + 5s outro = 10s |
+| 1 kill + mic | 8s prelude; tail follows speech (last word + 2.5s) |
+| 2+ kills | each extra kill tail = 15s (`kill_step`) from that kill |
+| kill + death | death tail = 5s outro + 5s `death_extra` |
+| lone death | 3s prelude + 5s outro = 8s |
+| self-death | 10s prelude + 5s outro |
+| mic in the clip | ladder intro + `mic_intro_extra` (3s) |
 | Hard cap | 180s (buffer length) |
 
 After each save the script keeps watching for `watch_gap` (15s) more; any follow-up
@@ -165,13 +170,19 @@ Notes:
   new save into one already in flight when it arrives before OBS starts writing
   (the newest press wins), which would merge two saves into one clip; this guard
   defers any save that would land too soon after the previous one.
-- Clip timing keys: `prelude` (10s before a kill/self-death), `prelude_death` (5s
-  before a lone death), `outro` (5s base tail), `kill_step` (15s per kill),
-  `death_extra` (5s after a death that follows a kill), `mic_extra` (5s once per
-  event when the mic is active), `watch_gap` (15s follow-up window after a save),
-  `max_clip_seconds` (180s hard cap, matches the replay buffer length).
-- `mic_source` (OBS input name, default `MIC`) and `mic_threshold` (RMS, default
-  0.01) drive the +5s mic boost via the `InputVolumeMeters` websocket event.
+- Clip timing keys: `prelude` (10s before a multi-kill / self-death),
+  `prelude_single` (5s before a lone kill), `prelude_death` (3s before a lone
+  death), `prelude_combo` (15s intro for a kill+death or death-first fight),
+  `outro` (5s base tail), `kill_step` (15s tail after each *extra* kill — resets
+  per kill, not additive), `death_extra` (5s after a death that follows a kill),
+  `watch_gap` (15s follow-up window after a save), `max_clip_seconds` (180s cap).
+- `mic_source` (OBS input name, default `MIC`) drives the mic follow through the
+  `InputVolumeMeters` websocket event. `mic_threshold` (linear amplitude, default
+  0.03 = about -30 dB) is how loud counts as speech; `mic_tail` (2.5s) is the
+  dead-air delay that ends the clip; `mic_min` (3s) is a small floor.
+- `mic_intro_extra` (default 3) adds a few seconds of **intro** whenever the mic
+  is active during a clip — a little more lead-in so what you were mumbling
+  before the kill (or ranting about after) is included.
 - `gamertag_fuzzy_ratio` (0.67 = ~4/6 chars) makes OCR gamertag matching tolerant
   to character swaps and clipped reads of your tag.
 - `feed_log` (default true) appends a clean killfeed feed to `feed_log_path`
@@ -181,6 +192,14 @@ Notes:
   `Get-Content "E:\OBS Recording\killfeed_feed.log" -Wait -Tail 20`. A missed
   death shows up as either a `--` row (your name was misread) or no row at all
   (OCR/timing/crop).
+- `raw_log_path` (default `E:/OBS Recording/killfeed_raw.log`) holds every OCR
+  row **and** a clip-extension trace, so you can see exactly why a clip got long:
+  `[CLIP] OPEN kill | intro 5s -> clip 10s`,
+  `[CLIP] EXTEND +15.0s (kill x2) -> clip 30s`,
+  `[CLIP] EXTEND +1.0s (mic follow, -23.4 dB [mag -31.0]) -> clip 31s`,
+  `[CLIP] DONE kill | 2k/0d | intro 13s | clip 31s`.
+  Each line names the trigger, the seconds added and the new length; mic lines
+  show the level (what triggered it, and the magnitude in brackets).
 - `detect_chime` (default true) plays a two-tone ding whenever your gamertag is
   registered in the killfeed (kill / death / self-death) — instant audio
   confirmation the script sees you. `chime_wav` can point at a custom WAV;
@@ -189,3 +208,7 @@ Notes:
 ## Contributing / Contact
 
 Found this useful, or found something broken? Open an issue on GitHub.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 PlayMaGame.

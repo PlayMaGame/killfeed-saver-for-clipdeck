@@ -60,6 +60,7 @@ DEFAULTS = {
     "mic_extra": 5,           # (retired) legacy one-shot mic bonus
     "mic_tail": 2.5,          # dead-air seconds after the last speech -> clip ends
     "mic_min": 3,             # small floor: mic clip is at least this long
+    "mic_intro_extra": 3,     # extra intro on a death clip when you talk (e.g. an outro rant)
     "mic_source": "MIC",      # OBS input whose level is watched
     "mic_threshold": 0.01,    # RMS multiplier above which the mic counts as active
     "watch_gap": 15,          # keep watching this long after a save for follow-up action
@@ -133,6 +134,11 @@ def _log_line(f, msg, stamp):
 def feed_msg(msg):
     """Your-events log: a clip decision line (skip/dupe/open), timestamped."""
     _log_line(FEED_LOG, msg, True)
+
+
+def raw_msg(msg):
+    """Raw log: also carries the clip-extension trace (open/extend/done)."""
+    _log_line(RAW_LOG, msg, True)
 
 
 def clip_summary(msg):
@@ -979,13 +985,15 @@ def refresh_overlay_html(cfg, obs, crop, source_name):
 class Saver:
     """One clip per fight.
 
-    The clip is a window pinned to the first event (10s prelude for kills and
-    self-deaths, 5s for a lone death). Each additional kill grows it by
-    `kill_step` (15s); a death that follows a kill adds `death_extra`; a mic
-    that is active during a window adds `mic_extra` once per event. A follow-up
-    event that arrives after a clip was already saved triggers a REWRITE: a
-    longer clip is saved and the shorter one deleted, so a fight always ends
-    with a single clip at its final length.
+    The clip is a window pinned to the first event (its prelude depends on the
+    fight: a lone kill uses `prelude_single`, a lone death `prelude_death`, a
+    kill+death or death-first fight `prelude_combo`). Each *extra* kill resets
+    the tail to `kill_step` from that kill; a death that follows a kill adds
+    `death_extra`; an active mic follows your voice (`mic_tail` after the last
+    speech) and adds `mic_intro_extra` to the intro. A follow-up event that
+    arrives after a clip was already saved triggers a REWRITE: a longer clip is
+    saved and the shorter one deleted, so a fight always ends with a single clip
+    at its final length.
     """
 
     def __init__(self, cfg, obs):
@@ -1000,6 +1008,8 @@ class Saver:
         self._deferred = False
         self.mic_hot = False
         self.mic_last_hot = 0.0
+        self.mic_last_mul = 0.0   # level used last time the mic triggered (linear)
+        self.mic_last_mag = 0.0   # channel-0 magnitude at that moment (linear)
         self._rbp_coalesce_gap = cfg.get("rbp_trigger_gap", 3.0)
 
         self.prelude = cfg.get("prelude", 10)
@@ -1012,6 +1022,7 @@ class Saver:
         self.mic_extra = cfg.get("mic_extra", 5)
         self.mic_tail = cfg.get("mic_tail", 2.5)
         self.mic_min = cfg.get("mic_min", 3)
+        self.mic_intro_extra = cfg.get("mic_intro_extra", 3)
         self.watch_gap = cfg.get("watch_gap", 15)
         self.max_clip = cfg.get("max_clip_seconds", 180)
         self.mic_source = cfg.get("mic_source", "MIC")
@@ -1036,6 +1047,7 @@ class Saver:
         self.mic_extra = cfg.get("mic_extra", 5)
         self.mic_tail = cfg.get("mic_tail", 2.5)
         self.mic_min = cfg.get("mic_min", 3)
+        self.mic_intro_extra = cfg.get("mic_intro_extra", 3)
         self.watch_gap = cfg.get("watch_gap", 15)
         self.max_clip = cfg.get("max_clip_seconds", 180)
         self.mic_source = cfg.get("mic_source", "MIC")
@@ -1067,14 +1079,19 @@ class Saver:
             if inp.get("inputName") == self.mic_source:
                 levels = inp.get("inputLevelsMul") or []
                 flat = []
+                mags = []
                 for ch in levels:
                     if isinstance(ch, (list, tuple)):
                         flat.extend(ch)
+                        if ch:
+                            mags.append(ch[0])   # index 0 = magnitude (post filter/fader)
                     else:
                         flat.append(ch)
                 if flat and max(flat) > self.mic_threshold:
                     self.mic_hot = True
                     self.mic_last_hot = time.time()
+                    self.mic_last_mul = max(flat)              # value that triggered
+                    self.mic_last_mag = max(mags) if mags else 0.0
                     return
 
     def on_replay_saved(self, path):
@@ -1100,7 +1117,7 @@ class Saver:
                 "start": now - self.prelude_death,
                 "end": now + self.outro,
                 "kills": 0, "deaths": 1, "self_seen": False, "has_kills": False,
-                "mic_armed": True, "saved": [], "saved_once": False,
+                "mic_armed": True, "mic_intro": False, "saved": [], "saved_once": False,
                 "saved_end": None, "watch_until": None,
                 "finalize_after_save": False, "finalized": False,
                 "t_open": now,
@@ -1113,7 +1130,7 @@ class Saver:
                 "end": now + self.outro,
                 "kills": 1 if kind == "kill" else 0, "deaths": 0,
                 "self_seen": kind == "self", "has_kills": kind == "kill",
-                "mic_armed": True, "saved": [], "saved_once": False,
+                "mic_armed": True, "mic_intro": False, "saved": [], "saved_once": False,
                 "saved_end": None, "watch_until": None,
                 "finalize_after_save": False, "finalized": False,
                 "t_open": now,
@@ -1129,26 +1146,34 @@ class Saver:
         lost a death uses a kill-count ladder: 1 kill -> `prelude_death` (3s),
         2 kills -> `prelude` (10s), 3+ kills -> `prelude_combo` (15s cap).
         A kill-only fight keeps `prelude_single` (1 kill) / `prelude` (2+).
+        A death-only fight uses `prelude_death` (or `prelude` for a self-death).
+
+        If the mic is active during the fight, `mic_intro_extra` is added to the
+        intro (a bit more lead-in to cover the buildup you may be mumbling about
+        before a kill, or ranting about in the outro).
 
         `start` is set to the target exactly while the clip is unsaved (it may
         shrink -- e.g. a single kill opens at 5s but a kill+death must be 3s);
         once a clip has been saved we only extend, forcing a rewrite."""
         f = self.fight
-        if f is None or not f["has_kills"]:
+        if f is None:
             return
-        if f.get("death_first"):
-            target = self.prelude_combo              # died first, then killed -> 15s
+        if not f["has_kills"]:
+            base = self.prelude if f["self_seen"] else self.prelude_death
+        elif f.get("death_first"):
+            base = self.prelude_combo                # died first, then killed -> 15s
         elif f["deaths"] or f["self_seen"]:
             if f["kills"] >= 3:
-                target = self.prelude_combo          # 3+ kills -> 15s (cap)
+                base = self.prelude_combo            # 3+ kills -> 15s (cap)
             elif f["kills"] == 2:
-                target = self.prelude                # 2 kills -> 10s
+                base = self.prelude                  # 2 kills -> 10s
             else:
-                target = self.prelude_death          # 1 kill + death -> 3s
+                base = self.prelude_death            # 1 kill + death -> 3s
         elif f["kills"] >= 2:
-            target = self.prelude                    # kill-only multi -> 10s
+            base = self.prelude                      # kill-only multi -> 10s
         else:
-            target = self.prelude_single             # kill-only single -> 5s
+            base = self.prelude_single               # kill-only single -> 5s
+        target = base + (self.mic_intro_extra if f.get("mic_intro") else 0)
         want = f["t_open"] - target
         if want == f["start"]:
             return
@@ -1161,6 +1186,20 @@ class Saver:
     def _clip_length(self):
         f = self.fight
         return int(round(min(f["end"] - f["start"], self.max_clip)))
+
+    @staticmethod
+    def _mul_db(mul):
+        return (20.0 * math.log10(mul)) if mul > 0 else -120.0
+
+    def _bump_end(self, new_end, cause):
+        """Grow the clip end and log to the raw log why, by how much and the new length."""
+        f = self.fight
+        if f is None or new_end <= f["end"]:
+            return
+        delta = new_end - f["end"]
+        f["end"] = new_end
+        raw_msg("[CLIP] EXTEND +%.1fs (%s) -> clip %ds"
+                % (delta, cause, self._clip_length()))
 
     def _classify(self):
         f = self.fight
@@ -1227,9 +1266,11 @@ class Saver:
         if fresh:
             clip_log("[CLIP] START kill | %r -> %r | target %ds"
                   % (killer, victim, self._clip_length()))
+            raw_msg("[CLIP] OPEN kill | intro %ds -> clip %ds"
+                    % (int(round(self.fight["t_open"] - self.fight["start"])),
+                       self._clip_length()))
         else:
-            self.fight["end"] = max(self.fight["end"],
-                                    self.fight["start"] + self.kill_step * self.fight["kills"])
+            self._bump_end(now + self.kill_step, "kill x%d" % self.fight["kills"])
             clip_log("[CLIP] EXTEND kill x%d%s | %r -> %r | target %ds"
                   % (self.fight["kills"],
                      " (multi-kill)" if self.fight["kills"] > 1 else "",
@@ -1252,6 +1293,10 @@ class Saver:
             self._open(now, kind)
             clip_log("[CLIP] START %s | killer=%r | target %ds"
                   % (kind, killer, self._clip_length()))
+            raw_msg("[CLIP] OPEN %s | intro %ds -> clip %ds"
+                    % (kind,
+                       int(round(self.fight["t_open"] - self.fight["start"])),
+                       self._clip_length()))
         else:
             if kind == "self":
                 self.fight["self_seen"] = True
@@ -1262,9 +1307,9 @@ class Saver:
                 self.fight["death_first"] = True
             if self.fight["has_kills"]:
                 # complaining room after a death that follows a kill
-                self.fight["end"] = max(self.fight["end"], now + self.outro + self.death_extra)
+                self._bump_end(now + self.outro + self.death_extra, "death")
             else:
-                self.fight["end"] = max(self.fight["end"], now + self.outro)
+                self._bump_end(now + self.outro, "death (lone)")
             clip_log("[CLIP] EXTEND %s | killer=%r | target %ds"
                   % (kind, killer, self._clip_length()))
         self.fight["you_read"] = victim
@@ -1292,23 +1337,30 @@ class Saver:
         # the last speech. A small `mic_min` floor keeps a brief blip usable.
         if f["kills"] or f["self_seen"] or f["deaths"]:
             if self.mic_last_hot > 0 and now - self.mic_last_hot <= self.mic_tail:
+                if not f.get("mic_intro"):
+                    f["mic_intro"] = True
+                    clip_log("[CLIP] mic heard -> +%ds intro on this clip"
+                             % self.mic_intro_extra)
+                    self._ensure_intro()
                 want = self.mic_last_hot + self.mic_tail
                 if want > f["end"]:
-                    f["end"] = want
+                    self._bump_end(want, "mic follow, %.1f dB [mag %.1f]"
+                                   % (self._mul_db(self.mic_last_mul),
+                                      self._mul_db(self.mic_last_mag)))
                     if not f.get("mic_logged"):
                         f["mic_logged"] = True
                         clip_log("[CLIP] EXTEND mic (follow, tail %.1fs) | target %ds"
                                  % (self.mic_tail, self._clip_length()))
             if self.mic_last_hot >= f["t_open"]:
-                floor_end = f["t_open"] + self.mic_min
-                if floor_end > f["end"]:
-                    f["end"] = floor_end
+                self._bump_end(f["t_open"] + self.mic_min,
+                               "mic floor, %.1f dB" % self._mul_db(self.mic_last_mul))
 
         # Hard cap: once the clip would exceed the buffer, clamp and finalize.
         max_end = f["start"] + self.max_clip
         if f["end"] > max_end:
             f["end"] = max_end
             f["finalize_after_save"] = True
+            raw_msg("[CLIP] HARD CAP -> clip %ds" % self._clip_length())
 
         # Growth past an already-saved clip means a rewrite is pending: stop
         # watching the old follow-up window and wait for the new end instead.
@@ -1376,6 +1428,9 @@ class Saver:
         dur = int(round(f["saved_end"] - f["start"])) if f.get("saved_end") else 0
         clip_log("[CLIP] DONE | %d kill(s) / %d death(s) -> %s %ds"
               % (f["kills"], f["deaths"], clip_type, dur))
+        raw_msg("[CLIP] DONE %s | %dk/%dd | intro %ds | clip %ds"
+                % (clip_type, f["kills"], f["deaths"],
+                   int(round(f["t_open"] - f["start"])), dur))
         info = {"you": f.get("you_read", ""),
                 "enemies": [e for e in f.get("kill_names", []) if e],
                 "death": f.get("death_name", "")}

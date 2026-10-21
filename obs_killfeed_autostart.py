@@ -266,6 +266,8 @@ def script_defaults(settings):
     obs.obs_data_set_default_int(settings, "kf_mic_extra", istr("mic_extra", 5))
     obs.obs_data_set_default_double(settings, "kf_mic_tail", fnum("mic_tail", 2.5))
     obs.obs_data_set_default_int(settings, "kf_mic_min", istr("mic_min", 3))
+    obs.obs_data_set_default_int(
+        settings, "kf_mic_intro_extra", istr("mic_intro_extra", 3))
     obs.obs_data_set_default_int(settings, "kf_watch_gap", istr("watch_gap", 15))
     obs.obs_data_set_default_int(settings, "kf_max_clip", istr("max_clip_seconds", 180))
     obs.obs_data_set_default_string(
@@ -383,6 +385,10 @@ def script_update(settings):
     mmin = obs.obs_data_get_int(settings, "kf_mic_min")
     if 0 <= mmin <= 300:
         new["mic_min"] = mmin
+
+    mie = obs.obs_data_get_int(settings, "kf_mic_intro_extra")
+    if 0 <= mie <= 300:
+        new["mic_intro_extra"] = mie
 
     wg = obs.obs_data_get_int(settings, "kf_watch_gap")
     if 1 <= wg <= 300:
@@ -821,6 +827,8 @@ def script_properties():
         props, "kf_mic_tail", "Mic dead-air tail (s)", 0.0, 15.0, 0.5)
     obs.obs_properties_add_int_slider(
         props, "kf_mic_min", "Mic clip floor (s)", 0, 30, 1)
+    obs.obs_properties_add_int_slider(
+        props, "kf_mic_intro_extra", "Extra intro (s) on a death clip when you talk", 0, 30, 1)
     obs.obs_properties_add_int_slider(
         props, "kf_watch_gap", "Watch window after a save (s)", 1, 60, 1)
     obs.obs_properties_add_int_slider(
