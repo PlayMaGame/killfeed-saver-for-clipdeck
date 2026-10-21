@@ -153,6 +153,26 @@ Notes:
   from the right folder anyway after the crash-recovery dialog, so your normal shortcut
   is unaffected.
 
+## Kill Feed dock and clip hotkeys
+
+The autostart script regenerates `killfeed_dock.html` every 3 seconds. Start OBS
+once so the file exists, then show it inside OBS as a Custom Browser Dock:
+
+1. **View > Docks > Custom Browser Docks...**
+2. Name it `Kill Feed` and set the URL to the full path of `killfeed_dock.html`,
+   e.g. `file:///D:/Learn-Python/Streaming%202026/killfeed-saver/killfeed_dock.html`
+3. Click **Apply**. The dock shows **WORKING** / **NOT RUNNING** (saver heartbeat
+   within 8s), the replay-buffer state, and the last 3 clips newest-first.
+   **copy** puts a clip's full path on the clipboard.
+
+`auto_open_clip` (default on) watches the clipboard: copy a `.mp4` path that
+lives under the recordings root and it opens in your default player about a
+second later. It ignores whatever was already on the clipboard at startup.
+
+The script also registers three OBS hotkeys — `Killfeed: open last clip (1)`,
+`(2)` and `(3)`. Bind them in **Settings > Hotkeys**; they open the three newest
+clips and still find them after CLIPDECK renames or moves the files.
+
 ## Config notes
 
 - `crop` is `[x, y, width, height]` and must cover the global killfeed region.
@@ -204,6 +224,11 @@ Notes:
   registered in the killfeed (kill / death / self-death) — instant audio
   confirmation the script sees you. `chime_wav` can point at a custom WAV;
   blank auto-generates `chime.wav` next to the script.
+- `clips_log_path` (default `E:/OBS Recording/killfeed_clips.log`) gets one line
+  per saved clip. The dock and the open-last-clip hotkeys read this file, so
+  keep it next to the clips it describes.
+- `auto_start_replay` (default false) starts the replay buffer as soon as the
+  saver connects to OBS, so you never forget to arm it.
 
 ## Contributing / Contact
 

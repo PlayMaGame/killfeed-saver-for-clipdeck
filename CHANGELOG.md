@@ -5,6 +5,13 @@ All notable changes to Killfeed Saver.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- README documentation for the Kill Feed dock, clipboard auto-open, and the
+  three open-last-clip hotkeys, plus the `clips_log_path` and
+  `auto_start_replay` config keys.
+
 ## [1.2.1] - 2026-10-10
 
 ### Added
