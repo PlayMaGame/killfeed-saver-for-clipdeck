@@ -60,15 +60,17 @@ arbitrary 1s–6h durations), so every clip is saved at its exact length — no 
 ## Pairs with CLIPDECK
 
 This tool is the capture side of a two-part workflow and is designed to run
-alongside **CLIPDECK**, a self-hosted gaming-clip triage deck:
+alongside **[CLIPDECK](https://github.com/PlayMaGame/clipdeck)**, a self-hosted
+gaming-clip triage deck:
 
 - Killfeed Saver saves exact-length replay clips of your kills/deaths.
 - CLIPDECK auto-pulls those clips, rips them into vertical 9:16 videos
   (1080x1920, ~60fps, with a minimap PiP), and serves a phone "deck" where you
   swipe to triage: right = keep, left = delete, up/down = skip, hold for
   slow/fast, tap stars to rank.
-- Keeps are archived to `CLIPDECK-Keeps` (most-starred first); sources are
-  removed only after a verified rip, so nothing is lost.
+- Keeps are archived to `CLIPDECK-Keeps` (most-starred first); sources can be
+  removed only after a verified rip, and only when deletion is explicitly
+  enabled — so nothing is lost by default.
 
 Because CLIPDECK moves/renames clips, the open-last-clip helper resolves a logged
 clip by its core name if the original path no longer exists.
